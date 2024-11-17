@@ -14,6 +14,7 @@ byte rateSpot = 0;
 long lastBeat = 0; // Waktu ketika detak terakhir terjadi
 float beatsPerMinute;
 int beatAvg;
+float temperature;
 
 unsigned long lastUpdate = 0;
 int hours = 0;
@@ -29,44 +30,52 @@ bool alertOn = false;             // Status apakah buzzer dan LED menyala
 unsigned long lastBlinkTime = 0;  // Waktu terakhir berkedip
 const unsigned long blinkInterval = 500; // Interval kedip (500ms)
 
-void setup() {
-  // Inisialisasi serial untuk debugging
-  Serial.begin(115200);
+//button
+int displayMode = 0; // 0 untuk waktu, 1 untuk detak jantung
+const int buttonPin = 0; // Pin untuk tombol
+bool buttonPressed = false;
 
-  Serial.println("Initializing...");
+//delay
+unsigned long lastUpdateTime = 0;
+const unsigned long updateInterval = 1000; // Update setiap 1 detik
 
-  // Inisialisasi sensor MAX30105
-  if (!particleSensor.begin(Wire, 400000)) // Gunakan port I2C default dengan kecepatan 400kHz
-  {
-    Serial.println("MAX30105 tidak ditemukan. Silakan periksa wiring/power.");
-    while (1);
+void checkButton() {
+  static bool lastButtonState = HIGH;
+  bool currentButtonState = digitalRead(buttonPin);
+
+  if (lastButtonState == HIGH && currentButtonState == LOW) { // Tombol ditekan
+    displayMode = (displayMode + 1) % 2; // Ganti mode (0 -> 1 -> 0)
+    delay(200); // Debounce
   }
-  Serial.println("Letakkan jari Anda di sensor dengan tekanan yang stabil.");
 
-  // Konfigurasi sensor
-  particleSensor.setup();
-  particleSensor.setPulseAmplitudeRed(0x0A); // Nyalakan LED merah dengan intensitas rendah untuk menunjukkan bahwa sensor aktif
-  particleSensor.setPulseAmplitudeGreen(0);  // Matikan LED hijau
-  particleSensor.enableDIETEMPRDY(); // Aktifkan pembacaan suhu
-
-  // Inisialisasi TFT display
-  tft.init();
-  tft.setRotation(0);  // Atur orientasi layar
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-
-  // Inisialisasi buzzer dan LED sebagai output
-  pinMode(buzzerPin, OUTPUT);
-  pinMode(ledPin, OUTPUT);
-
-  // Matikan buzzer dan LED di awal
-  digitalWrite(buzzerPin, LOW);
-  digitalWrite(ledPin, LOW);
+  lastButtonState = currentButtonState;
 }
 
-void loop() {
+
+void updateClock() {
+  if (millis() - lastUpdate >= 1000) {
+    lastUpdate = millis();
+    seconds++;
+
+    if (seconds >= 60) {
+      seconds = 0;
+      minutes++;
+    }
+
+    if (minutes >= 60) {
+      minutes = 0;
+      hours++;
+    }
+
+    if (hours >= 24) {
+      hours = 0;
+    }
+  }
+}
+
+void updateHeartRate() {
   long irValue = particleSensor.getIR(); // Baca nilai IR
-  float temperature = particleSensor.readTemperature(); // Baca suhu
+  temperature = particleSensor.readTemperature(); // Baca suhu
 
   // Cek apakah ada detak jantung yang terdeteksi
   if (checkForBeat(irValue) == true) {
@@ -116,53 +125,129 @@ void loop() {
       Serial.println("Alert stopped.");
     }
   }
+}
 
-  // Hitung waktu setiap 1 detik
-  if (millis() - lastUpdate >= 1000) {
-    lastUpdate = millis();
-    seconds++;
+void displayClock() {
+  tft.fillScreen(TFT_BLACK);
 
-    if (seconds >= 60) {
-      seconds = 0;
-      minutes++;
-    }
+  // Warna latar belakang dan elemen
+  uint16_t bgColor = TFT_BLACK;
+  uint16_t textColor = TFT_WHITE;
+  uint16_t accentColor = TFT_CYAN;
 
-    if (minutes >= 60) {
-      minutes = 0;
-      hours++;
-    }
+  // Ambil hari dan tanggal
+  String days[] = {"Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"};
+  String months[] = {"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"};
+  int currentDay = 3; // Ganti dengan pengambilan data hari otomatis jika tersedia
+  int currentDate = 17; // Ganti dengan tanggal otomatis
+  int currentMonth = 11; // Ganti dengan bulan otomatis (0 = Jan, 11 = Des)
 
-    if (hours >= 24) {
-      hours = 0;
-    }
+  // Tampilkan waktu utama (HH:MM)
+  tft.setTextColor(textColor, bgColor);
+  tft.setTextSize(8);
+  tft.setCursor(20, 75);
+  if (hours < 10) tft.print("0");
+  tft.print(hours);
+  tft.print(":");
+  if (minutes < 10) tft.print("0");
+  tft.print(minutes);
 
-    // Hapus tampilan sebelumnya
-    tft.fillScreen(TFT_BLACK);
+  // Garis pemisah dekoratif
+  tft.drawLine(20, 155, 220, 155, accentColor);
 
-    // Tampilkan waktu dalam format HH:MM:SS
-    tft.setTextSize(4);
-    tft.setCursor(20, 50);
-    
-    if (hours < 10) tft.print("0");
-    tft.print(hours);
-    tft.print(":");
-    if (minutes < 10) tft.print("0");
-    tft.print(minutes);
-    tft.print(":");
-    if (seconds < 10) tft.print("0");
-    tft.print(seconds);
+  // Hari dan tanggal
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, bgColor);
+  tft.setCursor(45, 165);
+  tft.print(days[currentDay]); // Nama hari
+  tft.print(", ");
+  tft.print(currentDate);
+  tft.print(" ");
+  tft.print(months[currentMonth]); // Nama bulan
 
-    // Tampilkan detak jantung rata-rata
-    tft.setTextSize(2); // Ukuran teks lebih kecil untuk beatAvg
-    tft.setCursor(20, 120);
-    tft.print("HR: ");
-    tft.print(beatAvg);
-    tft.print(" BPM");
+  // Tampilkan suhu dengan ikon
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_GREEN, bgColor);
+  tft.setCursor(80, 195);
+  tft.print(temperature, 1); // Suhu dalam 1 desimal
+  tft.print(" C");
+}
 
-    // Tampilkan suhu
-    tft.setCursor(20, 150);
-    tft.print("Temp: ");
-    tft.print(temperature, 1); // Tampilkan suhu dengan 1 angka desimal
-    tft.print(" C");
+void displayHeartRate() {
+  tft.fillScreen(TFT_BLACK);
+
+  // Gambar hatixx
+  int heartColor = (beatAvg > 100) ? TFT_RED : TFT_GREEN; // Warna hati dinamis
+  tft.fillCircle(105, 80, 40, heartColor); // Hati kiri atas (x: 120 -> 100)
+  tft.fillCircle(145, 80, 40, heartColor); // Hati kanan atas (x: 160 -> 140)
+  tft.fillTriangle(65, 80, 180, 80, 120, 160, heartColor); // Bagian bawah hati (x: 80, 200, 140 -> 60, 180, 120)
+
+  // BPM besar
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(6);
+  tft.setCursor(40, 180);
+  tft.print(beatAvg);
+  tft.print(" BPM");
+
+  // Label kecil "Heart Rate"
+  tft.setTextSize(2);
+  tft.setCursor(60, 230);
+  tft.print("Heart Rate");
+}
+
+void setup() {
+  // Inisialisasi serial untuk debugging
+  Serial.begin(115200);
+
+  Serial.println("Initializing...");
+
+  // Inisialisasi sensor MAX30105
+  if (!particleSensor.begin(Wire, 400000)) // Gunakan port I2C default dengan kecepatan 400kHz
+  {
+    Serial.println("MAX30105 tidak ditemukan. Silakan periksa wiring/power.");
+    while (1);
   }
+  Serial.println("Letakkan jari Anda di sensor dengan tekanan yang stabil.");
+
+  // Konfigurasi sensor
+  particleSensor.setup();
+  particleSensor.setPulseAmplitudeRed(0x0A); // Nyalakan LED merah dengan intensitas rendah untuk menunjukkan bahwa sensor aktif
+  particleSensor.setPulseAmplitudeGreen(0);  // Matikan LED hijau
+  particleSensor.enableDIETEMPRDY(); // Aktifkan pembacaan suhu
+
+  // Inisialisasi TFT display
+  tft.init();
+  tft.setRotation(0);  // Atur orientasi layar
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  // Inisialisasi buzzer dan LED sebagai output
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(ledPin, OUTPUT);
+
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  // Matikan buzzer dan LED di awal
+  digitalWrite(buzzerPin, LOW);
+  digitalWrite(ledPin, LOW);
+}
+
+void loop() {
+  if (millis() - lastUpdateTime > updateInterval) {
+    lastUpdateTime = millis();
+
+    // Perbarui data
+    updateClock();
+    updateHeartRate();
+
+    // Render tampilan sesuai mode
+    if (displayMode == 0) {
+      displayClock();
+    } else if (displayMode == 1) {
+      displayHeartRate();
+    }
+  }
+
+  // Periksa input tombol tanpa delay
+  checkButton();
 }
