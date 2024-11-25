@@ -1,3 +1,5 @@
+#include <Wire.h>
+
 void setup() {
   Serial.begin(115200);
   Wire.begin(21, 22); // Inisialisasi pin I2C
