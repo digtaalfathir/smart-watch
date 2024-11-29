@@ -13,6 +13,9 @@ TFT_eSPI tft = TFT_eSPI();  // Inisialisasi objek TFT
 const char* ssid = "BayMax";           // Ganti dengan SSID WiFi Anda
 const char* password = "11111111";   // Ganti dengan password WiFi Anda
 
+const char* ap_ssid = "Jam-Digta"; // Nama Wi-Fi yang akan dibuat ESP32
+const char* ap_password = "12345678";  // Password Wi-Fi
+
 WebServer server(80);  // Inisialisasi web server pada port 80
 
 MAX30105 particleSensor;
@@ -22,6 +25,7 @@ byte rateSpot = 0;
 long lastBeat = 0; // Waktu ketika detak terakhir terjadi
 float beatsPerMinute;
 int beatAvg;
+float temperature;
 
 unsigned long lastUpdate = 0;
 int hours = 0;
@@ -37,9 +41,26 @@ bool alertOn = false;             // Status apakah buzzer dan LED menyala
 unsigned long lastBlinkTime = 0;  // Waktu terakhir berkedip
 const unsigned long blinkInterval = 500; // Interval kedip (500ms)
 
+//button
+int displayMode = 1;
+const int buttonPin = 0; // Pin untuk tombol
+bool buttonPressed = false;
+
+void checkButton() {
+  static bool lastButtonState = HIGH;
+  bool currentButtonState = digitalRead(buttonPin);
+
+  if (lastButtonState == HIGH && currentButtonState == LOW) { // Tombol ditekan
+    displayMode++;
+    if (displayMode > 3) displayMode = 1; // Reset mode ke 1
+    delay(200); // Debounce
+  }
+
+  lastButtonState = currentButtonState;
+}
+
 // Fungsi untuk menyajikan halaman web
-void handleRoot() {
-  // HTML + JavaScript untuk halaman web
+void handleHeartRate() {
   String html = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -47,137 +68,232 @@ void handleRoot() {
   <title>Heart Rate Monitor</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    /* Gaya global untuk body */
     body {
       font-family: Arial, sans-serif;
+//      background: linear-gradient(to bottom, #fff6f6, #ffe6e6);
+      color: #333;
       margin: 0;
       padding: 0;
-      background-color: #f4f4f9;
-      color: #333;
     }
 
-    /* Gaya untuk header */
-    header {
-      background-color: #007bff;
-      color: white;
-      padding: 15px 0;
+    h1 {
       text-align: center;
-      font-size: 24px;
-      font-weight: bold;
-      box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
-    }
-
-    /* Kontainer utama */
-    .container {
-      max-width: 600px;
-      margin: 20px auto;
-      padding: 20px;
-      background: white;
-      border-radius: 10px;
-      box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
-      text-align: center;
-    }
-
-    /* Judul untuk grafik */
-    .chart-title {
-      margin: 20px 0;
-      font-size: 20px;
-      font-weight: bold;
+      margin: 20px 10px;
+      font-size: 28px;
       color: #007bff;
+      text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.2);
     }
 
-    /* Gaya untuk elemen informasi */
+    canvas {
+      display: block;
+      margin: 20px auto;
+      border-radius: 10px;
+      border: 1px solid #ddd;
+      background: #fff;
+      box-shadow: 0px 6px 10px rgba(0, 0, 0, 0.1);
+    }
+
     .info {
-      margin-top: 20px;
+      text-align: center;
       font-size: 18px;
-      color: #555;
+      margin: 10px 0;
     }
 
     .info span {
       font-weight: bold;
       color: #007bff;
     }
+
+    .download-btn {
+      display: block;
+      margin: 20px auto;
+      padding: 10px 20px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    .download-btn:hover {
+      background-color: #0056b3;
+    }
+
+    footer {
+      text-align: center;
+      padding: 10px 0;
+      background: #007bff;
+      color: white;
+      font-size: 14px;
+      margin-top: 20px;
+    }
+
+    .tooltip {
+      position: absolute;
+      display: none;
+      background: #333;
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 5px;
+      font-size: 12px;
+      pointer-events: none;
+      box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+    }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-  <header>
-    Heart Rate Monitor
-  </header>
-  <div class="container">
-    <div class="chart-title">Live Heart Rate (BPM)</div>
-    <canvas id="heartRateChart" width="400" height="200"></canvas>
-    <div class="info">
-      <p>Current Heart Rate: <span id="currentHR">--</span> BPM</p>
-      <p>Last Update: <span id="lastUpdate">--</span></p>
-    </div>
-  </div>
-  <script>
-    const ctx = document.getElementById('heartRateChart').getContext('2d');
-    const chart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: [],  // Waktu
-        datasets: [{
-          label: 'Heart Rate (BPM)',
-          data: [],   // Data detak jantung
-          borderColor: '#007bff',
-          backgroundColor: 'rgba(0, 123, 255, 0.2)',
-          borderWidth: 2,
-          tension: 0.4,
-          fill: true,
-        }]
-      },
-      options: {
-        responsive: true,
-        scales: {
-          x: { 
-            title: { display: true, text: 'Time (s)' },
-            ticks: { color: '#555' }
-          },
-          y: { 
-            title: { display: true, text: 'BPM' },
-            min: 0,
-            max: 100,
-            ticks: { color: '#555' }
-          }
-        },
-        plugins: {
-          legend: {
-            labels: {
-              color: '#333',
-              font: { size: 14 }
-            }
-          }
-        }
-      }
-    });
+  <h1>Heart Rate Monitor</h1>
 
-    // Update data setiap 60 detik
-    setInterval(async () => {
+  <canvas id="heartRateChart" width="400" height="200"></canvas>
+  <div class="info">Current Heart Rate: <span id="currentHR">--</span> BPM</div>
+
+  <button class="download-btn" id="downloadBtn">Download Data as CSV</button>
+
+  <div class="tooltip" id="tooltip"></div>
+
+  <script>
+    const heartRateCanvas = document.getElementById('heartRateChart');
+    const heartRateCtx = heartRateCanvas.getContext('2d');
+    const tooltip = document.getElementById('tooltip');
+    const downloadBtn = document.getElementById('downloadBtn');
+
+    const heartRateData = [];
+    const labels = [];
+    const maxDataPoints = 500;
+
+    function drawChart(ctx, data, labels, color, maxY, title) {
+      ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+      // Draw title
+      ctx.font = '16px Arial';
+      ctx.fillStyle = '#007bff';
+      ctx.fillText(title, 10, 20);
+
+      // Draw axes
+      ctx.strokeStyle = '#ccc';
+      ctx.beginPath();
+      ctx.moveTo(40, 180);
+      ctx.lineTo(380, 180); // X-axis
+      ctx.moveTo(40, 180);
+      ctx.lineTo(40, 20);  // Y-axis
+      ctx.stroke();
+
+      // Plot data points
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      const points = [];
+      data.forEach((value, index) => {
+        const x = 40 + (index * (340 / (maxDataPoints - 1)));
+        const y = 180 - (value / maxY * 160);
+        points.push({ x, y, value, label: labels[index] });
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+
+      // Draw data points as circles
+      points.forEach(({ x, y }) => {
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, 2 * Math.PI);
+        ctx.fill();
+      });
+
+      return points;
+    }
+
+    function addHoverEffect(canvas, ctx, data, labels, color, maxY, title) {
+      const points = drawChart(ctx, data, labels, color, maxY, title);
+
+      canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        tooltip.style.display = 'none'; // Hide tooltip by default
+
+        points.forEach(({ x, y, value, label }) => {
+          const distance = Math.sqrt((x - mouseX) ** 2 + (y - mouseY) ** 2);
+          if (distance < 5) {
+            // Highlight point
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            drawChart(ctx, data, labels, color, maxY, title);
+            ctx.beginPath();
+            ctx.arc(x, y, 5, 0, 2 * Math.PI);
+            ctx.fillStyle = 'red';
+            ctx.fill();
+
+            // Show tooltip
+            tooltip.style.display = 'block';
+            tooltip.style.left = `${e.pageX + 10}px`;
+            tooltip.style.top = `${e.pageY - 10}px`;
+            tooltip.innerHTML = `Time: ${label}<br>Value: ${value} BPM`;
+          }
+        });
+      });
+    }
+
+    async function fetchData() {
       try {
         const response = await fetch('/data');
-        const data = await response.json();
+        const { beatAvg } = await response.json();
+
+        // Update data arrays
         const time = new Date().toLocaleTimeString();
-
-        // Tambahkan data ke grafik
-        chart.data.labels.push(time);
-        chart.data.datasets[0].data.push(data.beatAvg);
-
-        if (chart.data.labels.length > 50) {
-          chart.data.labels.shift();  // Hapus data lama
-          chart.data.datasets[0].data.shift();
+        if (heartRateData.length >= maxDataPoints) {
+          heartRateData.shift();
+          labels.shift();
         }
+        heartRateData.push(beatAvg);
+        labels.push(time);
 
-        chart.update();
+        // Update chart and hover effect
+        addHoverEffect(heartRateCanvas, heartRateCtx, heartRateData, labels, '#007bff', 150, 'HeartRate (BPM)');
 
-        // Perbarui nilai di bawah grafik
-        document.getElementById('currentHR').innerText = data.beatAvg;
-        document.getElementById('lastUpdate').innerText = time;
+        // Update chart
+        drawChart(heartRateCtx, heartRateData, labels, '#007bff', 150, 'Heart Rate (BPM)');
+
+        // Update current value
+        document.getElementById('currentHR').innerText = beatAvg || '--';
       } catch (error) {
         console.error("Error fetching data:", error);
       }
-    }, 1000);
+    }
+
+    // Fetch data every second
+    setInterval(fetchData, 1000);
+
+   // Function to download data as CSV
+    function downloadData() {
+      let csvContent = "Time,Heart Rate (BPM)\n"; // Headers
+
+      // Add data rows
+      for (let i = 0; i < heartRateData.length; i++) {
+        csvContent += `${labels[i]},${heartRateData[i]}\n`;
+      }
+
+      // Create a Blob from the CSV content
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      
+      // Create a download link
+      const link = document.createElement('a');
+      if (link.download !== undefined) {
+        // Create a URL for the Blob and set the download attribute
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', 'heart_rate_data.csv');
+        
+        // Simulate a click to download the file
+        link.click();
+      }
+    }
+
+    // Event listener for download button
+    downloadBtn.addEventListener('click', downloadData);
+    
   </script>
 </body>
 </html>
@@ -186,10 +302,204 @@ void handleRoot() {
   server.send(200, "text/html", html);
 }
 
+// Halaman untuk grafik Temperature
+void handleTemperature() {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Temperature Monitor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+//      background: linear-gradient(to bottom, #fff6f6, #ffe6e6);
+      color: #333;
+      margin: 0;
+      padding: 0;
+    }
+
+    h1 {
+      text-align: center;
+      margin: 20px 10px;
+      font-size: 28px;
+      color: #ff4500;
+      text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    canvas {
+      display: block;
+      margin: 20px auto;
+      border-radius: 10px;
+      border: 1px solid #ddd;
+      background: #fff;
+      box-shadow: 0px 6px 10px rgba(0, 0, 0, 0.1);
+    }
+
+    .info {
+      text-align: center;
+      font-size: 18px;
+      margin: 10px 0;
+    }
+
+    .info span {
+      font-weight: bold;
+      color: #ff4500;
+    }
+
+    footer {
+      text-align: center;
+      padding: 10px 0;
+      background: #ff4500;
+      color: white;
+      font-size: 14px;
+      margin-top: 20px;
+    }
+
+    .tooltip {
+      position: absolute;
+      display: none;
+      background: #333;
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 5px;
+      font-size: 12px;
+      pointer-events: none;
+      box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+    }
+  </style>
+</head>
+<body>
+  <h1>Temperature Monitor</h1>
+
+  <canvas id="temperatureChart" width="400" height="200"></canvas>
+  <div class="info">Current Temperature: <span id="currentTemp">--</span>C</div>
+//  <footer>2024 Temperature Monitoring System</footer>
+
+  <div class="tooltip" id="tooltip"></div>
+
+  <script>
+    const tempCanvas = document.getElementById('temperatureChart');
+    const tempCtx = tempCanvas.getContext('2d');
+    const tooltip = document.getElementById('tooltip');
+
+    const tempData = [];
+    const labels = [];
+    const maxDataPoints = 50;
+
+    function drawChart(ctx, data, labels, color, maxY, title) {
+      ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+      // Draw title
+      ctx.font = '16px Arial';
+      ctx.fillStyle = '#ff4500';
+      ctx.fillText(title, 10, 20);
+
+      // Draw axes
+      ctx.strokeStyle = '#ccc';
+      ctx.beginPath();
+      ctx.moveTo(40, 180);
+      ctx.lineTo(380, 180); // X-axis
+      ctx.moveTo(40, 180);
+      ctx.lineTo(40, 20);  // Y-axis
+      ctx.stroke();
+
+      // Plot data points
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      const points = [];
+      data.forEach((value, index) => {
+        const x = 40 + (index * (340 / (maxDataPoints - 1)));
+        const y = 180 - (value / maxY * 160);
+        points.push({ x, y, value, label: labels[index] });
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+
+      // Draw data points as circles
+      points.forEach(({ x, y }) => {
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, 2 * Math.PI);
+        ctx.fill();
+      });
+
+      return points;
+    }
+
+    function addHoverEffect(canvas, ctx, data, labels, color, maxY, title) {
+      const points = drawChart(ctx, data, labels, color, maxY, title);
+
+      canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        tooltip.style.display = 'none'; // Hide tooltip by default
+
+        points.forEach(({ x, y, value, label }) => {
+          const distance = Math.sqrt((x - mouseX) ** 2 + (y - mouseY) ** 2);
+          if (distance < 5) {
+            // Highlight point
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            drawChart(ctx, data, labels, color, maxY, title);
+            ctx.beginPath();
+            ctx.arc(x, y, 5, 0, 2 * Math.PI);
+            ctx.fillStyle = 'red';
+            ctx.fill();
+
+            // Show tooltip
+            tooltip.style.display = 'block';
+            tooltip.style.left = `${e.pageX + 10}px`;
+            tooltip.style.top = `${e.pageY - 10}px`;
+            tooltip.innerHTML = `Time: ${label}<br>Value: ${value} °C`;
+          }
+        });
+      });
+    }
+
+    async function fetchData() {
+      try {
+        const response = await fetch('/data');
+        const { temperature } = await response.json();
+
+        // Update data arrays
+        const time = new Date().toLocaleTimeString();
+        if (tempData.length >= maxDataPoints) {
+          tempData.shift();
+          labels.shift();
+        }
+        tempData.push(temperature);
+        labels.push(time);
+
+        // Update chart and hover effect
+        addHoverEffect(tempCanvas, tempCtx, tempData, labels, '#ff4500', 50, 'Temperature (°C)');
+
+        // Update current value
+        document.getElementById('currentTemp').innerText = temperature || '--';
+      } catch (error) {
+        console.error("Error fetching data:", error);
+      }
+    }
+
+    // Fetch data every second
+    setInterval(fetchData, 1000);
+  </script>
+</body>
+</html>
+)rawliteral";
+
+  server.send(200, "text/html", html);
+}
 
 // Fungsi untuk memberikan data JSON detak jantung
 void handleData() {
-  String json = "{\"beatAvg\": " + String(beatAvg) + "}";
+  String json = "{\"beatAvg\": " + String(beatAvg) + ", \"temperature\": " + String(temperature) + "}";
+  server.sendHeader("Access-Control-Allow-Origin", "*");
   server.send(200, "application/json", json);
 }
 
@@ -199,15 +509,11 @@ void setup() {
 
   Serial.println("Initializing...");
 
-  // Inisialisasi Wi-Fi
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to Wi-Fi");
-   while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.print(".");
-  }
-  Serial.println("\nConnected! IP address: ");
-  Serial.println(WiFi.localIP());  // Tampilkan IP lokal ESP32
+  // Inisialisasi Wi-Fi sebagai Access Point
+  WiFi.softAP(ap_ssid, ap_password);
+  Serial.println("Wi-Fi Access Point Started!");
+  Serial.print("Access Point IP Address: ");
+  Serial.println(WiFi.softAPIP());
 
   // Inisialisasi sensor MAX30105
   if (!particleSensor.begin(Wire, 400000)) // Gunakan port I2C default dengan kecepatan 400kHz
@@ -233,12 +539,15 @@ void setup() {
   pinMode(buzzerPin, OUTPUT);
   pinMode(ledPin, OUTPUT);
 
+pinMode(buttonPin, INPUT_PULLUP);
+
   // Matikan buzzer dan LED di awal
   digitalWrite(buzzerPin, LOW);
   digitalWrite(ledPin, LOW);
 
   // Atur handler untuk web server
-  server.on("/", handleRoot);    // Halaman utama
+  server.on("/", handleHeartRate);
+  server.on("/device", handleTemperature);
   server.on("/data", handleData); // Endpoint JSON
   server.begin();
   Serial.println("Web server started.");
@@ -248,7 +557,7 @@ void loop() {
   server.handleClient();
   
   long irValue = particleSensor.getIR(); // Baca nilai IR
-  float temperature = particleSensor.readTemperature(); // Baca suhu
+  temperature = particleSensor.readTemperature(); // Baca suhu
 
   // Cek apakah ada detak jantung yang terdeteksi
   if (checkForBeat(irValue) == true) {
@@ -319,37 +628,158 @@ void loop() {
       hours = 0;
     }
 
-    // Hapus tampilan sebelumnya
+    if (displayMode == 1) {
+        tft.fillScreen(TFT_BLACK);
+        
+        // Warna latar belakang dan elemen
+        uint16_t bgColor = TFT_BLACK;
+        uint16_t textColor = TFT_WHITE;
+        uint16_t accentColor = TFT_CYAN;
+      
+        // Ambil hari dan tanggal
+        String days[] = {"Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"};
+        String months[] = {"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"};
+        int currentDay = 3; // Ganti dengan pengambilan data hari otomatis jika tersedia
+        int currentDate = 17; // Ganti dengan tanggal otomatis
+        int currentMonth = 11; // Ganti dengan bulan otomatis (0 = Jan, 11 = Des)
+      
+        // Tampilkan waktu utama (HH:MM)
+        tft.setTextColor(textColor, bgColor);
+        tft.setTextSize(8);
+        tft.setCursor(20, 75);
+        if (hours < 10) tft.print("0");
+        tft.print(hours);
+        tft.print(":");
+        if (minutes < 10) tft.print("0");
+        tft.print(minutes);
+      
+        // Garis pemisah dekoratif
+        tft.drawLine(20, 155, 220, 155, accentColor);
+      
+        // Hari dan tanggal
+        tft.setTextSize(2);
+        tft.setTextColor(TFT_WHITE, bgColor);
+        tft.setCursor(45, 165);
+        tft.print(days[currentDay]); // Nama hari
+        tft.print(", ");
+        tft.print(currentDate);
+        tft.print(" ");
+        tft.print(months[currentMonth]); // Nama bulan
+      
+        // Tampilkan suhu dengan ikon
+        tft.setTextSize(2);
+        tft.setTextColor(TFT_GREEN, bgColor);
+        tft.setCursor(80, 195);
+        tft.print(temperature, 1); // Suhu dalam 1 desimal
+        tft.print(" C");
+    }
+    else if (displayMode == 2) {
     tft.fillScreen(TFT_BLACK);
 
-    // Tampilkan waktu dalam format HH:MM:SS
-    tft.setTextSize(4);
-    tft.setCursor(20, 50);
-    
-    if (hours < 10) tft.print("0");
-    tft.print(hours);
-    tft.print(":");
-    if (minutes < 10) tft.print("0");
-    tft.print(minutes);
-    tft.print(":");
-    if (seconds < 10) tft.print("0");
-    tft.print(seconds);
+    // Warna elemen
+    uint16_t bgColor = TFT_BLACK;
+    uint16_t textColor = TFT_WHITE;
+    uint16_t accentColor = TFT_CYAN;
+    uint16_t heartColor = (beatAvg > 100) ? TFT_RED : TFT_GREEN; // Warna hati dinamis berdasarkan BPM
 
-    // Tampilkan detak jantung rata-rata
-    tft.setTextSize(2); // Ukuran teks lebih kecil untuk beatAvg
-    tft.setCursor(20, 120);
-    tft.print("HR: ");
+    // Header: "Heart Monitor"
+    tft.setTextSize(3);
+    tft.setTextColor(accentColor, bgColor);
+    tft.setCursor(35, 10);
+    tft.print("Heart Info");
+
+    // Garis dekoratif
+    tft.drawLine(10, 40, 230, 40, accentColor);
+
+    // Gambar hati dengan animasi dinamis (ukuran berubah dengan BPM)
+    int heartSize = 40 + (beatAvg > 100 ? 5 : 0); // Ukuran hati bertambah jika BPM > 100
+    tft.fillCircle(100, 90, heartSize, heartColor); // Hati kiri atas
+    tft.fillCircle(140, 90, heartSize, heartColor); // Hati kanan atas
+    tft.fillTriangle(65, 90, 180, 80, 120, 160 + (heartSize - 40), heartColor); // Bagian bawah hati
+
+    // Tampilkan BPM besar
+    tft.setTextColor(textColor, bgColor);
+    tft.setTextSize(5);
+    tft.setCursor(40, 180);
     tft.print(beatAvg);
     tft.print(" BPM");
 
-    // Tampilkan suhu
-    tft.setCursor(20, 150);
-    tft.print("Temp: ");
-    tft.print(temperature, 1); // Tampilkan suhu dengan 1 angka desimal
-    tft.print(" C");
+    // Indikator level detak jantung
+    String status = (beatAvg > 100) ? "High" : (beatAvg < 60) ? "Low" : "Normal";
+    uint16_t statusColor = (beatAvg > 100) ? TFT_RED : (beatAvg < 60) ? TFT_YELLOW : TFT_GREEN;
+    tft.setTextSize(2);
+    tft.setCursor(55, 230);
+    tft.setTextColor(statusColor, bgColor);
+    tft.print("Status: ");
+    tft.print(status);
 
-    // Tampilkan suhu
-    tft.setCursor(20, 180);
-    tft.print(WiFi.localIP()); // Tampilkan suhu dengan 1 angka desimal
+    // Catatan kecil
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_YELLOW, bgColor);
+    tft.setCursor(65, 260);
+    tft.print("Normal: 60-100 BPM.");
+}
+
+    else if (displayMode == 3) {
+    // Hapus tampilan sebelumnya
+    tft.fillScreen(TFT_BLACK);
+
+    // Warna elemen
+    uint16_t bgColor = TFT_BLACK;
+    uint16_t textColor = TFT_WHITE;
+    uint16_t accentColor = TFT_CYAN;
+
+    // Header: "Wi-Fi Info"
+    tft.setTextSize(3);
+    tft.setTextColor(accentColor, bgColor);
+    tft.setCursor(30, 10);
+    tft.print("Wi-Fi Info");
+
+    // Garis pemisah
+    tft.drawLine(10, 40, 230, 40, accentColor);
+
+    // Ikon Wi-Fi
+    tft.fillCircle(30, 70, 10, accentColor); // Titik utama
+    tft.fillTriangle(20, 70, 40, 70, 30, 90, accentColor); // Panah bawah
+    tft.drawCircle(30, 70, 14, accentColor); // Lingkaran luar
+    tft.drawCircle(30, 70, 20, accentColor); // Lingkaran luar kedua
+
+    // Tampilkan IP Address
+    tft.setTextSize(2);
+    tft.setTextColor(textColor, bgColor);
+    tft.setCursor(60, 65);
+    tft.print("IP:");
+    tft.setCursor(100, 65);
+    tft.print(WiFi.softAPIP());
+
+    // Tampilkan SSID (Nama Wi-Fi)
+    tft.setCursor(20, 110);
+    tft.setTextColor(TFT_GREEN, bgColor);
+    tft.print("SSID: ");
+    tft.setCursor(100, 110);
+    tft.setTextColor(textColor, bgColor);
+    tft.print(ap_ssid);
+
+    // Tampilkan Password
+    tft.setCursor(20, 140);
+    tft.setTextColor(TFT_RED, bgColor);
+    tft.print("PASS:");
+    tft.setCursor(100, 140);
+    tft.setTextColor(textColor, bgColor);
+    tft.print(ap_password);
+
+    // Garis bawah dekoratif
+    tft.drawLine(10, 180, 230, 180, accentColor);
+
+    // Catatan atau petunjuk
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_YELLOW, bgColor);
+    tft.setCursor(45, 200);
+    tft.print("Connect to Wi-Fi using the");
+    tft.setCursor(70, 215);
+    tft.print("above credentials.");
+    }
   }
+  
+  checkButton();
 }
