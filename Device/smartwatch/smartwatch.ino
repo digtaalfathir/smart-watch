@@ -13,7 +13,7 @@ TFT_eSPI tft = TFT_eSPI();  // Inisialisasi objek TFT
 const char* ssid = "BayMax";           // Ganti dengan SSID WiFi Anda
 const char* password = "11111111";   // Ganti dengan password WiFi Anda
 
-const char* ap_ssid = "Jam-Digta"; // Nama Wi-Fi yang akan dibuat ESP32
+const char* ap_ssid = "EBDGuard"; // Nama Wi-Fi yang akan dibuat ESP32
 const char* ap_password = "12345678";  // Password Wi-Fi
 
 WebServer server(80);  // Inisialisasi web server pada port 80
@@ -26,11 +26,24 @@ long lastBeat = 0; // Waktu ketika detak terakhir terjadi
 float beatsPerMinute;
 int beatAvg;
 float temperature;
+int limitHeartRate = 50;
+
+const int AVG_BUFFER_SIZE = 5;  // Ukuran buffer (5 detik)
+float beatAvgBuffer[AVG_BUFFER_SIZE];  // Buffer untuk nilai beatAvg
+int bufferIndex = 0;  // Indeks buffer
+int displayedBeatAvg = 0;  // Rata-rata beatAvg yang ditampilkan
 
 unsigned long lastUpdate = 0;
 int hours = 0;
 int minutes = 0;
 int seconds = 0;
+
+String days[] = {"Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"};
+String months[] = {"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"};
+  
+int currentDay = 0;   // 0 = Minggu, 1 = Senin, ..., 6 = Sabtu
+int currentDate = 1;  // Tanggal (1-31)
+int currentMonth = 0; // Bulan (0 = Jan, 11 = Des)
 
 // Deklarasi pin untuk buzzer dan LED
 const int buzzerPin = 17;
@@ -46,18 +59,34 @@ int displayMode = 1;
 const int buttonPin = 0; // Pin untuk tombol
 bool buttonPressed = false;
 
+unsigned long lastButtonPress = 0;  // Waktu terakhir tombol ditekan
+bool isScreenOn = true;            // Status layar (aktif atau mati)
+const unsigned long SCREEN_TIMEOUT = 10000; // Timeout layar dalam milidetik (10 detik)
+
+unsigned long lastValidBeatTime = 0;
+
 void checkButton() {
   static bool lastButtonState = HIGH;
   bool currentButtonState = digitalRead(buttonPin);
 
   if (lastButtonState == HIGH && currentButtonState == LOW) { // Tombol ditekan
-    displayMode++;
-    if (displayMode > 3) displayMode = 1; // Reset mode ke 1
+    lastButtonPress = millis(); // Catat waktu terakhir tombol ditekan
+
+    if (!isScreenOn) {
+      isScreenOn = true;       // Hidupkan layar jika mati
+      tft.writecommand(0x29);  // Perintah untuk menghidupkan layar TFT
+      Serial.println("Layar dihidupkan kembali.");
+    } else {
+      displayMode++;           // Ubah mode tampilan
+      if (displayMode > 3) displayMode = 1; // Reset mode ke 1
+    }
+
     delay(200); // Debounce
   }
 
   lastButtonState = currentButtonState;
 }
+
 
 // Fungsi untuk menyajikan halaman web
 void handleHeartRate() {
@@ -74,7 +103,7 @@ void handleHeartRate() {
       color: #333;
       margin: 0;
       padding: 0;
-    }
+    } 
 
     h1 {
       text-align: center;
@@ -496,6 +525,108 @@ void handleTemperature() {
   server.send(200, "text/html", html);
 }
 
+void handlesetup(){
+  String html = R"rawliteral(
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Setup Clock and Heart Rate Limit</title>
+      <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin: 20px; }
+        form { display: inline-block; text-align: left; margin: 20px; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+        label, input, select { display: block; margin-bottom: 10px; }
+        input[type="number"] { width: 100%; padding: 5px; }
+        button { padding: 10px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer; }
+      </style>
+    </head>
+    <body>
+      <h1>Setup Clock and Heart Rate Limit</h1>
+      
+      <!-- Formulir untuk mengatur waktu -->
+      <form action="/set_time" method="POST">
+        <h2>Set Time and Date</h2>
+        <label for="hours">Hours (0-23):</label>
+        <input type="number" id="hours" name="hours" min="0" max="23" required>
+        <label for="minutes">Minutes (0-59):</label>
+        <input type="number" id="minutes" name="minutes" min="0" max="59" required>
+        <label for="seconds">Seconds (0-59):</label>
+        <input type="number" id="seconds" name="seconds" min="0" max="59" required>
+        <label for="day">Day:</label>
+        <select id="day" name="day">
+          <option value="0">Minggu</option>
+          <option value="1">Senin</option>
+          <option value="2">Selasa</option>
+          <option value="3">Rabu</option>
+          <option value="4">Kamis</option>
+          <option value="5">Jumat</option>
+          <option value="6">Sabtu</option>
+        </select>
+        <label for="date">Date (1-31):</label>
+        <input type="number" id="date" name="date" min="1" max="31" required>
+        <label for="month">Month:</label>
+        <select id="month" name="month">
+          <option value="0">Jan</option>
+          <option value="1">Feb</option>
+          <option value="2">Mar</option>
+          <option value="3">Apr</option>
+          <option value="4">Mei</option>
+          <option value="5">Jun</option>
+          <option value="6">Jul</option>
+          <option value="7">Agu</option>
+          <option value="8">Sep</option>
+          <option value="9">Okt</option>
+          <option value="10">Nov</option>
+          <option value="11">Des</option>
+        </select>
+        <button type="submit">Set Time and Date</button>
+      </form>
+
+      <!-- Formulir untuk mengatur batas denyut jantung -->
+      <form action="/set_limit" method="POST">
+        <h2>Set Heart Rate Limit</h2>
+        <label for="limitHeartRate">Heart Rate Limit:</label>
+        <input type="number" id="limitHeartRate" name="limitHeartRate" min="30" max="200" value="50" required>
+        <button type="submit">Set Heart Rate Limit</button>
+      </form>
+    </body>
+    </html>
+  )rawliteral";
+  server.send(200, "text/html", html);
+  }
+
+void handleSetTime() {
+  if (server.hasArg("hours") && server.hasArg("minutes") && server.hasArg("seconds") &&
+      server.hasArg("day") && server.hasArg("date") && server.hasArg("month")) {
+    hours = server.arg("hours").toInt();
+    minutes = server.arg("minutes").toInt();
+    seconds = server.arg("seconds").toInt();
+    currentDay = server.arg("day").toInt();
+    currentDate = server.arg("date").toInt();
+    currentMonth = server.arg("month").toInt();
+
+    Serial.printf("Time updated: %02d:%02d:%02d\n", hours, minutes, seconds);
+    Serial.printf("Date updated: %s, %02d %s\n",
+                  days[currentDay].c_str(), currentDate, months[currentMonth].c_str());
+
+    server.send(200, "text/plain", "Time and date updated successfully!");
+  } else {
+    server.send(400, "text/plain", "Invalid input!");
+  }
+}
+
+void handleSetLimit() {
+  if (server.hasArg("limitHeartRate")) {
+    limitHeartRate = server.arg("limitHeartRate").toInt();
+
+    Serial.printf("Heart rate limit updated: %d\n", limitHeartRate);
+    server.send(200, "text/plain", "Heart rate limit updated successfully!");
+  } else {
+    server.send(400, "text/plain", "Invalid input!");
+  }
+}
+
+
+
 // Fungsi untuk memberikan data JSON detak jantung
 void handleData() {
   String json = "{\"beatAvg\": " + String(beatAvg) + ", \"temperature\": " + String(temperature) + "}";
@@ -549,6 +680,9 @@ pinMode(buttonPin, INPUT_PULLUP);
   server.on("/", handleHeartRate);
   server.on("/device", handleTemperature);
   server.on("/data", handleData); // Endpoint JSON
+  server.on("/setup", HTTP_GET, handlesetup);
+  server.on("/set_time", HTTP_POST, handleSetTime);
+  server.on("/set_limit", HTTP_POST, handleSetLimit);
   server.begin();
   Serial.println("Web server started.");
 }
@@ -575,12 +709,19 @@ void loop() {
       for (byte x = 0; x < RATE_SIZE; x++)
         beatAvg += rates[x];
       beatAvg /= RATE_SIZE;
+
+      lastValidBeatTime = millis();
     }
-    else beatAvg = 0;
+    else{
+      if (millis() - lastValidBeatTime >= 10000) {
+        beatAvg = 70;
+    }
+      }
   }
+//  else beatAvg = 0;
 
   // Periksa apakah beatAvg melebihi 80 dan nyalakan peringatan jika demikian
-  if (beatAvg > 80 && !alertActive) {
+  if (beatAvg > limitHeartRate && !alertActive) {
     alertActive = true;                 // Tandai bahwa peringatan aktif
     alertStartTime = millis();          // Catat waktu mulai peringatan
     lastBlinkTime = millis();           // Reset waktu kedipan
@@ -614,6 +755,17 @@ void loop() {
     lastUpdate = millis();
     seconds++;
 
+     // Tambahkan nilai beatAvg ke buffer
+    beatAvgBuffer[bufferIndex++] = beatAvg;
+    bufferIndex %= AVG_BUFFER_SIZE;  // Bungkus indeks agar tetap dalam rentang
+
+    // Hitung rata-rata dari buffer
+    float sum = 0;
+    for (int i = 0; i < AVG_BUFFER_SIZE; i++) {
+        sum += beatAvgBuffer[i];
+    }
+    displayedBeatAvg = sum / AVG_BUFFER_SIZE;
+
     if (seconds >= 60) {
       seconds = 0;
       minutes++;
@@ -629,95 +781,95 @@ void loop() {
     }
 
     if (displayMode == 1) {
-        tft.fillScreen(TFT_BLACK);
-        
-        // Warna latar belakang dan elemen
-        uint16_t bgColor = TFT_BLACK;
-        uint16_t textColor = TFT_WHITE;
-        uint16_t accentColor = TFT_CYAN;
-      
-        // Ambil hari dan tanggal
-        String days[] = {"Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"};
-        String months[] = {"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"};
-        int currentDay = 3; // Ganti dengan pengambilan data hari otomatis jika tersedia
-        int currentDate = 17; // Ganti dengan tanggal otomatis
-        int currentMonth = 11; // Ganti dengan bulan otomatis (0 = Jan, 11 = Des)
-      
-        // Tampilkan waktu utama (HH:MM)
-        tft.setTextColor(textColor, bgColor);
-        tft.setTextSize(8);
-        tft.setCursor(20, 75);
-        if (hours < 10) tft.print("0");
-        tft.print(hours);
-        tft.print(":");
-        if (minutes < 10) tft.print("0");
-        tft.print(minutes);
-      
-        // Garis pemisah dekoratif
-        tft.drawLine(20, 155, 220, 155, accentColor);
-      
-        // Hari dan tanggal
-        tft.setTextSize(2);
-        tft.setTextColor(TFT_WHITE, bgColor);
-        tft.setCursor(45, 165);
-        tft.print(days[currentDay]); // Nama hari
-        tft.print(", ");
-        tft.print(currentDate);
-        tft.print(" ");
-        tft.print(months[currentMonth]); // Nama bulan
-      
-        // Tampilkan suhu dengan ikon
+    tft.fillScreen(TFT_BLACK);
+    
+    // Warna latar belakang dan elemen
+    uint16_t bgColor = TFT_BLACK;
+    uint16_t textColor = TFT_WHITE;
+    uint16_t accentColor = TFT_CYAN;
+
+    // Tampilkan waktu utama (HH:MM)
+    tft.setTextColor(textColor, bgColor);
+    tft.setTextSize(8);
+    tft.setCursor(20, 75);
+    if (hours < 10) tft.print("0");
+    tft.print(hours);
+    tft.print(":");
+    if (minutes < 10) tft.print("0");
+    tft.print(minutes);
+  
+    // Garis pemisah dekoratif
+    tft.drawLine(20, 155, 220, 155, accentColor);
+  
+    // Hari dan tanggal
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_WHITE, bgColor);
+    tft.setCursor(45, 165);
+    tft.print(days[currentDay]); // Nama hari
+    tft.print(", ");
+    tft.print(currentDate);
+    tft.print(" ");
+    tft.print(months[currentMonth]); // Nama bulan
+
+    // Tampilkan suhu dengan ikon
         tft.setTextSize(2);
         tft.setTextColor(TFT_GREEN, bgColor);
         tft.setCursor(80, 195);
         tft.print(temperature, 1); // Suhu dalam 1 desimal
         tft.print(" C");
-    }
-    else if (displayMode == 2) {
+}
+    
+    if (displayMode == 2) {
     tft.fillScreen(TFT_BLACK);
 
     // Warna elemen
     uint16_t bgColor = TFT_BLACK;
     uint16_t textColor = TFT_WHITE;
     uint16_t accentColor = TFT_CYAN;
-    uint16_t heartColor = (beatAvg > 100) ? TFT_RED : TFT_GREEN; // Warna hati dinamis berdasarkan BPM
+    uint16_t heartColor = (beatAvg > 100) ? TFT_RED : TFT_GREEN;
 
-    // Header: "Heart Monitor"
+    // Header: "Heart Info"
+    String header = "Heart Info";
     tft.setTextSize(3);
+    int headerWidth = header.length() * 18; // 18 adalah lebar karakter rata-rata untuk setTextSize(3)
     tft.setTextColor(accentColor, bgColor);
-    tft.setCursor(35, 10);
-    tft.print("Heart Info");
+    tft.setCursor((240 - headerWidth) / 2, 10); // Posisikan di tengah
+    tft.print(header);
 
     // Garis dekoratif
     tft.drawLine(10, 40, 230, 40, accentColor);
 
     // Gambar hati dengan animasi dinamis (ukuran berubah dengan BPM)
-    int heartSize = 40 + (beatAvg > 100 ? 5 : 0); // Ukuran hati bertambah jika BPM > 100
+    int heartSize = 40 + (beatAvg > 100 ? 5 : 0);
     tft.fillCircle(100, 90, heartSize, heartColor); // Hati kiri atas
     tft.fillCircle(140, 90, heartSize, heartColor); // Hati kanan atas
     tft.fillTriangle(65, 90, 180, 80, 120, 160 + (heartSize - 40), heartColor); // Bagian bawah hati
 
     // Tampilkan BPM besar
+    String bpmText = String(displayedBeatAvg) + " BPM";
+    tft.setTextSize(4);
+    int bpmWidth = bpmText.length() * 24; // 24 adalah lebar karakter rata-rata untuk setTextSize(4)
+    tft.setCursor((240 - bpmWidth) / 2, 180); // Posisikan di tengah
     tft.setTextColor(textColor, bgColor);
-    tft.setTextSize(5);
-    tft.setCursor(40, 180);
-    tft.print(beatAvg);
-    tft.print(" BPM");
+    tft.print(bpmText);
 
     // Indikator level detak jantung
-    String status = (beatAvg > 100) ? "High" : (beatAvg < 60) ? "Low" : "Normal";
-    uint16_t statusColor = (beatAvg > 100) ? TFT_RED : (beatAvg < 60) ? TFT_YELLOW : TFT_GREEN;
+    String status = (displayedBeatAvg > 100) ? "High" : (displayedBeatAvg < 60) ? "Low" : "Normal";
+    uint16_t statusColor = (displayedBeatAvg > 100) ? TFT_RED : (displayedBeatAvg < 60) ? TFT_YELLOW : TFT_GREEN;
+    String statusText = "Status: " + status;
     tft.setTextSize(2);
-    tft.setCursor(55, 230);
+    int statusWidth = statusText.length() * 12; // 12 adalah lebar karakter rata-rata untuk setTextSize(2)
+    tft.setCursor((240 - statusWidth) / 2, 230); // Posisikan di tengah
     tft.setTextColor(statusColor, bgColor);
-    tft.print("Status: ");
-    tft.print(status);
+    tft.print(statusText);
 
     // Catatan kecil
+    String note = "Normal: 60-100 BPM.";
     tft.setTextSize(1);
+    int noteWidth = note.length() * 6; // 6 adalah lebar karakter rata-rata untuk setTextSize(1)
+    tft.setCursor((240 - noteWidth) / 2, 260); // Posisikan di tengah
     tft.setTextColor(TFT_YELLOW, bgColor);
-    tft.setCursor(65, 260);
-    tft.print("Normal: 60-100 BPM.");
+    tft.print(note);
 }
 
     else if (displayMode == 3) {
@@ -768,7 +920,7 @@ void loop() {
     tft.setTextColor(textColor, bgColor);
     tft.print(ap_password);
 
-    // Garis bawah dekoratif
+    // Garis bawah dekoratif 
     tft.drawLine(10, 180, 230, 180, accentColor);
 
     // Catatan atau petunjuk
@@ -782,4 +934,10 @@ void loop() {
   }
   
   checkButton();
+   // Periksa apakah layar perlu dimatikan
+  if (isScreenOn && millis() - lastButtonPress > SCREEN_TIMEOUT) {
+    isScreenOn = false;       // Matikan layar
+    tft.writecommand(0x28);   // Perintah untuk mematikan layar TFT
+    Serial.println("Layar dimatikan karena tidak ada aktivitas.");
+  }
 }
